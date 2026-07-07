@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 import os
+from collections import defaultdict
 
 # =====================================================================
 # 1. FUNÇÕES MATEMÁTICAS (PCA)
@@ -30,6 +31,64 @@ def projetar_rosto(rosto_achatado, rosto_medio, eigenfaces):
     rosto_centralizado = rosto_achatado - rosto_medio
     return np.dot(eigenfaces, rosto_centralizado)
 
+def dividir_treino_teste(imagens, nomes, proporcao_teste=0.2):
+    por_pessoa = defaultdict(list)
+    for img, nome in zip(imagens, nomes):
+        por_pessoa[nome].append(img)
+    
+    treino_imgs, treino_nomes = [], []
+    teste_imgs, teste_nomes = [], []
+    for nome, fotos in por_pessoa.items():
+        n_teste = int(len(fotos) * proporcao_teste)
+        teste_imgs.extend(fotos[:n_teste])
+        teste_nomes.extend([nome] * n_teste)
+        treino_imgs.extend(fotos[n_teste:])
+        treino_nomes.extend([nome] * (len(fotos) - n_teste))
+    
+    return np.array(treino_imgs), treino_nomes, np.array(teste_imgs), teste_nomes
+
+def avaliar_acuracia_otimizada(pesos_treino_total, nomes_treinamento, pesos_teste_total, nomes_teste, k):
+    # Fatiamos os pesos para pegar apenas as 'k' primeiras colunas
+    pesos_treino_k = pesos_treino_total[:, :k]
+    pesos_teste_k = pesos_teste_total[:, :k]
+
+    acertos = 0
+    for i, pesos_t in enumerate(pesos_teste_k):
+        distancias = np.linalg.norm(pesos_treino_k - pesos_t, axis=1)
+        indice_mais_proximo = np.argmin(distancias)
+        if nomes_treinamento[indice_mais_proximo] == nomes_teste[i]:
+            acertos += 1
+
+    return acertos / len(nomes_teste)
+
+
+def plotar_acuracia_vs_k(eigenfaces, rosto_medio, matriz_treinamento, nomes_treinamento, matriz_teste, nomes_teste):
+    valores_k = list(range(1, len(eigenfaces) + 1))
+    acuracias = []
+
+    print("\nPré-calculando projeções para acelerar o processo...")
+    # Faz a projeção pesada UMA ÚNICA VEZ antes do loop!
+    pesos_treino_total = np.array([projetar_rosto(img, rosto_medio, eigenfaces) for img in matriz_treinamento])
+    pesos_teste_total = np.array([projetar_rosto(img, rosto_medio, eigenfaces) for img in matriz_teste])
+
+    for k in valores_k:
+        print(f"Avaliando k={k}/{len(eigenfaces)}...", end='\r')
+        acc = avaliar_acuracia_otimizada(pesos_treino_total, nomes_treinamento, pesos_teste_total, nomes_teste, k)
+        acuracias.append(acc)
+
+    print("\nAvaliação concluída!")
+    
+    plt.figure(figsize=(8, 5))
+    plt.plot(valores_k, acuracias, marker='o', linestyle='-', color='g')
+    plt.title('Acurácia vs. Número de Componentes Principais (k)')
+    plt.xlabel('Número de Componentes (k)')
+    plt.ylabel('Acurácia no Conjunto de Teste')
+    plt.grid(True)
+    plt.show()
+
+    melhor_k = valores_k[int(np.argmax(acuracias))]
+    print(f"Melhor k encontrado: {melhor_k} (acurácia = {max(acuracias)*100:.1f}%)")
+    return melhor_k, acuracias
 # =====================================================================
 # 2. CARREGAMENTO DO BANCO DE DADOS (face_dataset)
 # =====================================================================
@@ -102,29 +161,59 @@ def mostrar_eigenfaces(eigenfaces, largura, altura, num_faces=10):
 LARGURA, ALTURA = 92, 112
 CAMINHO_DATASET = "face_dataset"
 
-# Carregar imagens e extrair as Eigenfaces
-matriz_treinamento, nomes_treinamento = carregar_dataset(CAMINHO_DATASET, LARGURA, ALTURA)
+# Carregar todas as imagens do dataset
+todas_imagens, todos_nomes = carregar_dataset(CAMINHO_DATASET, LARGURA, ALTURA)
 
-if len(matriz_treinamento) == 0:
+if len(todas_imagens) == 0:
     print("Erro: Nenhuma imagem encontrada na pasta 'face_dataset'.")
     exit()
 
+# Separar em treino (usado pra calcular eigenfaces) e teste (nunca visto no treino)
+matriz_treinamento, nomes_treinamento, matriz_teste, nomes_teste = dividir_treino_teste(
+    todas_imagens, todos_nomes, proporcao_teste=0.2
+)
+
+print(f"Treino: {len(matriz_treinamento)} fotos | Teste: {len(matriz_teste)} fotos")
+
 print("Executando PCA (Álgebra Linear)...")
-rosto_medio, eigenfaces, autovalores = treinar_eigenfaces(matriz_treinamento)   
+rosto_medio, eigenfaces, autovalores = treinar_eigenfaces(matriz_treinamento)
 
 #plotar_variancia(autovalores)
-mostrar_eigenfaces(eigenfaces, LARGURA, ALTURA)
+#mostrar_eigenfaces(eigenfaces, LARGURA, ALTURA)
 
-# Calcular os 'pesos' de todas as imagens conhecidas no banco de dados
+# Calcular os 'pesos' de todas as imagens de TREINO (banco de dados conhecido)
 pesos_conhecidos = []
 for imagem in matriz_treinamento:
     pesos_conhecidos.append(projetar_rosto(imagem, rosto_medio, eigenfaces))
 pesos_conhecidos = np.array(pesos_conhecidos)
 
 # =====================================================================
+# 3.1 AVALIAÇÃO FORMAL: ACURÁCIA EM FUNÇÃO DO NÚMERO DE COMPONENTES (k)
+# =====================================================================
+print("Avaliando acurácia para diferentes valores de k...")
+melhor_k_grafico, acuracias_por_k = plotar_acuracia_vs_k(
+    eigenfaces, rosto_medio, matriz_treinamento, nomes_treinamento, matriz_teste, nomes_teste
+)
+
+# CORREÇÃO: Forçar um k maior para garantir captura de detalhes reais do rosto
+# Em PCA facial, k entre 30 e 50 costuma ser o "ponto doce" para precisão e velocidade
+melhor_k = 60 
+
+# Se você tiver menos de 40 fotos de treino, limite o k ao máximo que você tem
+if melhor_k > len(eigenfaces):
+    melhor_k = len(eigenfaces)
+
+print(f"Ignorando k={melhor_k_grafico} do gráfico. Usando k={melhor_k} para maior segurança.")
+
+# A partir daqui, o sistema (webcam) usa o k robusto
+eigenfaces_usadas = eigenfaces[:melhor_k]
+pesos_conhecidos = np.array([
+    projetar_rosto(img, rosto_medio, eigenfaces_usadas) for img in matriz_treinamento
+])
+# =====================================================================
 # 4. RECONHECIMENTO EM TEMPO REAL (WEBCAM)
 # =====================================================================
-LIMIAR_ACEITACAO = 3000.0  # VOCÊS PRECISARÃO AJUSTAR ESSE NÚMERO NA PRÁTICA!
+LIMIAR_ACEITACAO = 3000.0  # AJUSTAR ESSE NÚMERO NA PRÁTICA!
 
 classificador_face = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 camera = cv2.VideoCapture(0)
@@ -147,7 +236,7 @@ while True:
         rosto_vetor = rosto_redimensionado.flatten()
         
         # Projetar o rosto da câmera
-        pesos_camera = projetar_rosto(rosto_vetor, rosto_medio, eigenfaces)
+        pesos_camera = projetar_rosto(rosto_vetor, rosto_medio, eigenfaces_usadas)
         
         # Encontrar a menor distância entre o rosto da câmera e o banco de dados
         distancias = np.linalg.norm(pesos_conhecidos - pesos_camera, axis=1)

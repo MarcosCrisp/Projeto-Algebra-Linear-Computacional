@@ -1,16 +1,19 @@
 import cv2
 import os
 
+# =====================================================================
+# CONFIGURAÇÕES INICIAIS
+# =====================================================================
 # Nome da pessoa que está na frente da câmera 
-print("Digite o nome da pessoa:")
-nome = input()
-NOME_PESSOA = nome
+print("Digite o nome da pessoa que deseja capturar:")
+input_nome = input().strip()
+NOME_PESSOA = input_nome
 
 # Tamanho padrão que definimos para a Álgebra Linear
 LARGURA, ALTURA = 92, 112 
-QUANTIDADE_FOTOS = 100 
+QUANTIDADE_FOTOS = 80 # 30 fotos é um bom número para o PCA aprender as variações
 
-# Cria a pasta para salvar as fotos, se não existir
+# Cria a pasta para salvar as fotos
 pasta_destino = f"face_dataset/{NOME_PESSOA}"
 if not os.path.exists(pasta_destino):
     os.makedirs(pasta_destino)
